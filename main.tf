@@ -2,11 +2,11 @@ terraform {
   required_providers {
     coder = {
       source  = "coder/coder"
-      version = "0.5.0"
+      version = "0.8.3"
     }
     hcloud = {
       source  = "hetznercloud/hcloud"
-      version = "1.33.2"
+      version = "1.40.0"
     }
   }
 }
@@ -16,6 +16,7 @@ provider "hcloud" {
 }
 
 provider "coder" {
+  feature_use_managed_variables = true
 }
 
 variable "hcloud_token" {
@@ -29,52 +30,125 @@ EOF
   }
 }
 
-variable "instance_location" {
-  description = "What region should your workspace live in?"
-  default     = "nbg1"
-  validation {
-    condition     = contains(["nbg1", "fsn1", "hel1"], var.instance_location)
-    error_message = "Invalid zone!"
-  }
-}
-
-variable "instance_type" {
-  description = "What instance type should your workspace use?"
-  default     = "cx11"
-  validation {
-    condition     = contains(["cx11", "cx21", "cx31", "cx41", "cx51"], var.instance_type)
-    error_message = "Invalid instance type!"
-  }
-}
-
-variable "instance_os" {
-  description = "Which operating system should your workspace use?"
-  default     = "ubuntu-20.04"
-  validation {
-    condition     = contains(["ubuntu-22.04","ubuntu-20.04", "ubuntu-18.04", "debian-11", "debian-10"], var.instance_os)
-    error_message = "Invalid OS!"
-  }
-}
-
-variable "volume_size" {
-  description = "How much storage space do you need in GB (can't be less then 10)?"
-  default     = "10"
-  validation {
-    condition     = var.volume_size >= 10
-    error_message = "Invalid volume size!"
-  }
-}
-
-variable "code_server" {
-  description = "Should Code Server be installed?"
-  default     = "true"
-  validation {
-    condition     = contains(["true","false"], var.code_server)
-    error_message = "Your answer can only be yes or no!"
-  }
-}
-
 data "coder_workspace" "me" {
+}
+
+data "coder_parameter" "volume_size" {
+  name = "volume_size"
+  display_name = "Volume Size"
+  description = "The size of the volume in GB."
+  type = "number"
+  default = 10
+  mutable = false
+
+  validation {
+    min = 10
+    max = 1000
+  }
+}
+
+data "coder_parameter" "code_server" {
+  name = "code_server"
+  display_name = "Code Server"
+  description = "Code Server is a web-based IDE based on Visual Studio Code."
+  type = "bool"
+  default = true
+  mutable = true
+}
+
+data "coder_parameter" "datacenter" {
+  name = "datacenter"
+  display_name = "Datacenter"
+  description = "The datacenter where your workspace will be provisioned."
+  type = "string"
+  mutable = true
+
+  option {
+    name = "Nuremberg"
+    value = "nbg1"
+  }
+
+  option {
+    name = "Falkenstein"
+    value = "fsn1"
+  }
+
+  option {
+    name = "Helsinki"
+    value = "hel1"
+  }
+
+  default = "nbg1"
+}
+
+data "coder_parameter" "instance_type" {
+  name = "instance_type"
+  display_name = "Instance Type"
+  description = "The instance type of your workspace."
+  type = "string"
+  mutable = true
+
+  option {
+    name = "CX11"
+    value = "cx11"
+  }
+
+  option {
+    name = "CX21"
+    value = "cx21"
+  }
+
+  option {
+    name = "CX31"
+    value = "cx31"
+  }
+
+  option {
+    name = "CX41"
+    value = "cx41"
+  }
+
+  option {
+    name = "CX51"
+    value = "cx51"
+  }
+
+  default = "cx11"
+}
+
+data "coder_parameter" "instance_os" {
+  name = "instance_os"
+  display_name = "Instance OS"
+  description = "The instance type of your workspace."
+  type = "string"
+  mutable = true
+
+  option {
+    name = "Ubuntu 22.04"
+    value = "ubuntu-22.04"
+  }
+
+  option {
+    name = "Ubuntu 20.04"
+    value = "ubuntu-20.04"
+  }
+
+  option {
+    name = "Ubuntu 18.04"
+    value = "ubuntu-18.04"
+  }
+
+  option {
+    name = "Debian 11"
+    value = "debian-11"
+  }
+
+  option {
+    name = "Debian 10"
+    value = "debian-10"
+  }
+
+  default = "debian-11"
 }
 
 resource "coder_agent" "dev" {
@@ -83,7 +157,8 @@ resource "coder_agent" "dev" {
 }
 
 resource "coder_app" "code-server" {
-  count         = var.code_server ? 1 : 0
+  slug          = "code-server"
+  count         = data.coder_parameter.code_server.value ? 1 : 0
   agent_id      = coder_agent.dev.id
   name          = "code-server"
   icon          = "/icon/code.svg"
@@ -105,24 +180,24 @@ resource "hcloud_ssh_key" "root" {
 resource "hcloud_server" "root" {
   count       = data.coder_workspace.me.start_count
   name        = "coder-${data.coder_workspace.me.owner}-${data.coder_workspace.me.name}-root"
-  server_type = var.instance_type
-  location    = var.instance_location
-  image       = var.instance_os
+  server_type = data.coder_parameter.instance_type.value
+  location    = data.coder_parameter.datacenter.value
+  image       = data.coder_parameter.instance_os.value
   ssh_keys    = [hcloud_ssh_key.root.id]
   user_data   = templatefile("cloud-config.yaml.tftpl", {
     username          = data.coder_workspace.me.owner
     volume_path       = "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.root.id}"
     init_script       = base64encode(coder_agent.dev.init_script)
     coder_agent_token = coder_agent.dev.token
-    code_server_setup = var.code_server
+    code_server_setup = data.coder_parameter.code_server.value
   })
 }
 
 resource "hcloud_volume" "root" {
   name         = "coder-${data.coder_workspace.me.owner}-${data.coder_workspace.me.name}-root"
-  size         = var.volume_size
+  size         = data.coder_parameter.volume_size.value
   format       = "ext4"
-  location     = var.instance_location
+  location     = data.coder_parameter.datacenter.value
 }
 
 resource "hcloud_volume_attachment" "root" {
